@@ -1,0 +1,317 @@
+---
+title: "Telco Customer Churn Prediction"
+author: "Sohum S."
+date: "April 5, 2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+if (!require("tidyverse")) install.packages("tidyverse")
+if (!require("caret")) install.packages("caret")
+if (!require("car")) install.packages("car")
+if (!require("MASS")) install.packages("MASS")
+if (!require("randomForest")) install.packages("randomForest")
+if (!require("rpart.plot")) install.packages("rpart.plot")
+```
+
+## Introduction
+Telco is a technology service provider for phone, internet, and streaming services. The company's dataset provides information about customers, the services they have signed up for, and payment details. The goal of this project is to use the data to predict which customers are likely to churn, or leave the service. This analysis will help the company further understand why certain customers are leaving and potentially prevent customers from leaving. This dataset was obtained from kaggle (https://www.kaggle.com/blastchar/telco-customer-churn).
+
+
+## Analysis
+We begin by loading the dataset and removing any data with NA values.
+```{r load_data}
+#Load the dataset
+cust_data = read.csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
+#Remove rows with NA values
+cust_data = na.omit(cust_data)
+```
+
+The "churn" variable is response variable which we aim to predict. We perform exploratory analysis using the predictor variables and identifying patterns that can be used for modeling.
+
+We start by making a stacked bar plot showing the churn based on the type of contract - month-to-month, one year, or two year. Based on the plot, customers that churned tend to have month-to-month contracts.
+
+```{r contract_churn}
+ggplot(cust_data, aes(fill = Contract, x = Churn)) + 
+  geom_bar(stat = "count") + 
+  ggtitle("Churn by Contract Type") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+We also plot the tenure against total charges and use color to represent the churned/retained customers. Of course, the longer a customer stays, the more the higher their total charges will be. Based on the graph, customers who churned typically left after a short duration and paid higher costs than those who stayed. 
+
+```{r total_charge_churn}
+ggplot(cust_data, aes(x = tenure, y = TotalCharges, color = Churn)) +
+  geom_point() +
+  ggtitle("Total Charges vs. Tenure with Churn Details") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+We can also bucket customer tenure and monthly charge variables to analyze the proportion of customers in each bucket to leave their service. 
+
+For tenure, we group customers' tenure in 5 month range buckets, ranging from 0 to 75 months. The table shows the distribution of customers who churned in each bracket. The bar plot shows a general trend that customers with a longer tenure tend to have lower churn rates. Most of the churn comes from customers who have not stayed with Telco for more than 20 months. 
+
+```{r tenure_bucket}
+breaks_t = seq(0,75,5)
+cust_data$tenure_bin = cut(cust_data$tenure, breaks_t)
+
+tenure_bin_table = table(cust_data$tenure_bin, cust_data$Churn)
+knitr::kable(tenure_bin_table)
+
+ggplot(cust_data, aes(tenure_bin, fill = Churn)) + 
+  geom_bar() +
+  ggtitle("Customer Count by Tenure with Churn Details") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
+```
+
+We group the customers' monthly charges into \$10 range buckets, ranging from \$10 to \$120. The table shows the distribuion of customers who churned in each bracket, and the bar plot visualizes this information. There is a general trend that higher monthly rates tend to have greater probability of churn. It appears that customers in the \$70-90 range tend to have a higher churn probability than other brackets.
+
+```{r monthly_charge_bucket}
+breaks_mc = seq(10, 120, 10)
+cust_data$MonthlyCharges_Bin = cut(cust_data$MonthlyCharges, breaks_mc)
+
+mc_bin_table = table(cust_data$MonthlyCharges_Bin, cust_data$Churn)
+knitr::kable(mc_bin_table)
+
+ggplot(cust_data, aes(MonthlyCharges_Bin, fill = Churn)) + 
+  geom_bar() + 
+  ggtitle("Customer Count by Monthly Charges with Churn Details") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
+```
+
+From our analysis, we also should note that many variables are categorical. This means that when we begin modeling, we should convert these categorical variables into numerical variables, by encoding or using dummy variables. 
+
+## Prediction Methods
+We can start by doing one-hot encoding for all categorical variables (except the response variable). We use the *dummyVars* function as part of the caret package to perform the encoding. Also, the general rule for dummy variables is to have one less variable than the number of categories, so we set the *fullRank* parameter to TRUE.
+
+```{r dummy_var_setup}
+dv = dummyVars(~ ., 
+               data = cust_data[,c(2,4:5,7:18)], 
+               fullRank = TRUE)
+enc_cust = predict(dv, newdata = cust_data)
+#reconstruct the dataset - include the encoded variables now
+cust_data_enc = cbind(cust_data[,-c(2,4:5,7:18)], enc_cust)
+
+#remove columns not necessary for prediction
+remove_cols = c("customerID", "tenure_bin", "MonthlyCharges_Bin")
+cust_data_new = cust_data_enc[, -which(colnames(cust_data_enc) %in% remove_cols)]
+```
+
+We have to check which variables are correlated with one another before modeling. We plot a correlation matrix to show which variables are closely related to one another and remove the completely correlated variables.
+
+```{r cor_matrix}
+#create correlation matrix
+cust_cor = cor(cust_data_new[,-5])
+
+#create correlation plot
+cor_plot = levelplot(cust_cor)
+cor_plot
+
+#remove highly correlated variables
+cust_data_mod = subset(cust_data_new, 
+                       select = -c(`OnlineSecurity.No internet service`,
+                                   `OnlineBackup.No internet service`, 
+                                   `TechSupport.No internet service`,
+                                   `StreamingTV.No internet service`, 
+                                   `StreamingMovies.No internet service`,
+                                   `DeviceProtection.No internet service`, 
+                                   `MultipleLines.No phone service`))
+```
+
+From the plot and matching indices back to the variables, it is clear that the "No Internet Service" and "No Phone Service" dummy variables are completely correlated with the InternetService and PhoneService variables. We remove these variables and can begin our modeling efforts. There are possibly additional correlated variables, such as MonthlyCharges and Tenure, but we will analyze these after building initial models to get a better sense of which to remove.
+
+### Training and Test Sets
+Using the cleaned customer dataset (cust_data_mod), we can create our training and test sets for modeling. We split the data so that 80% of the data is in the training set and 20% is in the test set. We will use only the training set for modeling and evaluate the performance on the test set. 
+
+```{r train_test}
+#Build training and test sets
+set.seed(1, sample.kind="Rounding")
+test_index <- createDataPartition(y = cust_data_mod$Churn, times = 1, p = 0.2, list = FALSE)
+
+cust_train = cust_data_mod[-test_index,]
+cust_test = cust_data_mod[test_index,]
+```
+
+### Logistic Regression Model
+We start modeling with logistic regression. We use all the predictor variables in our cust_train dataset to predict whether the customer is likely to churn or not. We then perform a VIF test to check for collinearity of the variables. Any variables with a VIF score greater than 5 have a chance of impacting the collinearity.
+
+```{r logistic_model1}
+#Model 1 - use all variables
+churn_log_model1 = glm(Churn ~ ., data = cust_train, family = binomial)
+knitr::kable(coef(summary(churn_log_model1))[1:10,]) #show model coefficients summary for first 10 variables
+
+#Check for collinearity 
+vif_model1 = vif(churn_log_model1)
+knitr::kable(vif_model1[vif_model1 > 5]) #show only collinear variables
+
+# Check correlation plot for tenure, TotalCharges, MonthlyCharges
+cust_train_cor1 = cor(cust_train[2:4,2:4])
+cust_train_corplot1 = levelplot(cust_train_cor1, aspect = "iso", scales=list(x=list(rot=90)))
+cust_train_corplot1 #tenure, MonthlyCharges, and TotalCharges are highly correlated
+```
+Based on the results, it is clear there are some collinearity issues. It appears that tenure, MonthlyCharges, and TotalCharges are highly correlated with one another. MonthlyCharges has correlations with many other variables, so we should certainly remove it. Out of tenure and TotalCharges, we choose to retain tenure. The earlier exploratory analysis showed a clear trend that customers with shorter tenure tend to have a much higher churn rate. 
+
+```{r logistic_model2}
+cust_train2 = subset(cust_train, 
+                    select = -c(MonthlyCharges, TotalCharges))
+
+churn_log_model2 = glm(Churn ~ ., data = cust_train2, family = binomial)
+#summary(churn_log_model2)
+p_values_model2 = coef(summary(churn_log_model2))[,4]
+knitr::kable(p_values_model2[p_values_model2 > 0.05])
+
+vif_model2 = vif(churn_log_model2)
+vif_model2[vif_model2 > 5] #there is no collinearity
+```
+
+In our second iteration of the model, we can see there is no more collinearity. Now, we can just remove the variables with low predictive power (P-value < 0.05). These variables are the gender, partner status, online backup (y/n), and device protection (y/n). 
+
+```{r logistic_model3}
+#Model 3 - remove variables that are not statistically significant
+cust_train3 = subset(cust_train2,
+                     select = -c(gender.Male, Partner.Yes, 
+                                 OnlineBackup.Yes, DeviceProtection.Yes))
+
+churn_log_model3 = glm(Churn ~ ., data = cust_train3, family = binomial)
+knitr::kable(coef(summary(churn_log_model3)))
+```
+
+This is the final logistic regression model we can use for making predictions. We can attribute the predictive power to the selected variables and describe this power using odds ratios. The closer this odds ratio is lower to 0, the lesser the risk of customer churn. For example, the Contract.TwoYear variable has an odds ratio of $e^-1.327 = 0.2653$. It makes sense that customers with longer contracts are less likely to churn compared to those with shorter contracts. This means that of those customers with an odds ratio of 1/4, only 1 in 5 customers will churn. The PaperlessBilling variable has an odds ratio of $e^0.3243 = 1.383$, so those with paperless billing are more likely to churn compared to those without paperless billing.
+
+Now, we have a model we can apply to make predictions. We need to adjust the test set to remove the variables done throughout the model selection process, and then apply the logistic regression equation given by the final model. We denote the final datasets as cust_data_train and cust_data_test. These datasets can be effectively used for any further modeling approaches, as we are finished with all data cleaning, encoding, and variable selection.
+
+```{r train_test_setup}
+#Setup Train and Test Sets
+cust_train_f = cust_train3
+cust_test_f = cust_test[,colnames(cust_train_f)]
+```
+
+For this section, we will only evaluate the model results on the training set. Later in the results section, we will apply our model on the test set. We start by applying the model equations to get predicted probabilities. Then, we construct a function to find the optimal cutoff for classification. Finally, we show the overall accuracy of the model on the training set. We will get into all the model metrics in the Results section, when applying the techniques on the test set.
+
+```{r train_predictions}
+#Predictions on Training Set
+glm_churn_probs_train = predict(churn_log_model3, data = cust_train_f, 
+                               type = "response")
+#Find the optimal cutoff level for deciding Yes/No
+cutoffs = seq(0.2, 0.8, 0.01)
+
+optimal_cutoff_func = function(i) {
+  glm_churn_pred_train = rep("No", length(glm_churn_probs_train))
+  glm_churn_pred_train[glm_churn_probs_train > i] = "Yes"
+  accuracy = mean(glm_churn_pred_train ==  cust_train_f$Churn)
+  return(accuracy)
+}
+
+cutoff_accs = sapply(cutoffs, optimal_cutoff_func)
+opt_cutoff = cutoffs[which.max(cutoff_accs)] #cutoff of 0.55
+
+glm_churn_pred_train = rep("No", length(glm_churn_probs_train))
+glm_churn_pred_train[glm_churn_probs_train > opt_cutoff] = "Yes"
+
+table(glm_churn_pred_train, cust_train_f$Churn)
+mean(glm_churn_pred_train ==  cust_train_f$Churn) #80.39111% accuracy
+```
+
+We find the best cutoff for classifying is 0.55, so any probability above this value will be considered a churn. Our model has 80.39% accuracy on the training set. The baseline accuracy if we were to guess all customers to stay is roughly 73.42%, so the model certainly is valuable at making predictions. As we saw earlier, this model can easily be interpreted as well, making it easy to understand how each variable impacts the chance of customer churn. 
+
+### Decision Tree
+Now we try building a decision tree model, using the train function as part of the caret package. We need to rename the columns to remove spaces to prevent the function from throwing errors. The results on the training set are shown below. Plots descrbing the parameter tuning and decision splitting are also included.
+```{r decision_tree_churn}
+#Format column names (remove spaces)
+colnames(cust_train_f) <- make.names(colnames(cust_train_f))
+colnames(cust_test_f) <- make.names(colnames(cust_test_f))
+
+#Build Decision Tree on Training Set
+churn_train_rpart <- train(Churn ~ ., data = cust_train_f,
+                           tuneGrid = data.frame(cp = seq(0.0, 0.1, len = 50)),
+                           method = "rpart")
+confusionMatrix(churn_train_rpart)
+
+#Plots
+plot(churn_train_rpart)
+rpart.plot(churn_train_rpart$finalModel)
+```
+
+The plot shows how tenure and internet service type are important variables in deciding customer churn. 
+
+### Random Forest
+We also build a random forest model to predict churn. The results on the training set are displayed below.
+```{r random_forest_churn}
+churn_train_randForest <- randomForest(Churn ~ ., data = cust_train_f,
+                                       ntrees = 1000)
+churn_train_randForest$confusion
+```
+The performance on the training set is similar to logistic regression performance, so advanced methods might not be completely useful.
+
+## Results
+
+We apply our 3 models (logistic, decision tree, and random forest) on the test set and summarize the results. 
+
+```{r test_results}
+#Logistic Regression
+cust_train_f = cust_train3
+cust_test_f = cust_test[,colnames(cust_train_f)]
+
+glm_churn_probs_test = predict(churn_log_model3, cust_test_f,
+                                type = "response")
+glm_churn_pred_test = rep("No", length(glm_churn_probs_test))
+glm_churn_pred_test[glm_churn_probs_test > opt_cutoff] = "Yes"
+
+glm_tbl = table(glm_churn_pred_test, cust_test_f$Churn)
+
+glm_metrics = c(mean(glm_churn_pred_test ==  cust_test_f$Churn), #81.59204% accuracy
+recall(glm_tbl), #91.48% recall
+precision(glm_tbl)) #84.68% precision
+
+#Decision Trees
+#Format column names (remove spaces)
+colnames(cust_train_f) <- make.names(colnames(cust_train_f))
+colnames(cust_test_f) <- make.names(colnames(cust_test_f))
+
+pred_churn_test_rpart = predict(churn_train_rpart, cust_test_f)
+rpart_tbl = table(pred_churn_test_rpart, cust_test_f$Churn)
+
+rpart_metrics = c(mean(pred_churn_test_rpart ==  cust_test_f$Churn), #78.32267% accuracy
+recall(rpart_tbl), #88.577% recall
+precision(rpart_tbl)) #83.03% precision
+
+#Random Forest
+pred_churn_test_rf = predict(churn_train_randForest, cust_test_f)
+rf_tbl = table(pred_churn_test_rf, cust_test_f$Churn)
+
+rf_metrics = c(mean(pred_churn_test_rf ==  cust_test_f$Churn), #80.31% accuracy
+recall(rf_tbl), #90.13% recall
+precision(rf_tbl)) #84.18% precision
+
+#Result Summary
+full_metrics = data.frame(glm_metrics, rpart_metrics, rf_metrics)
+rownames(full_metrics) = c("accuracy", "recall", "precision")
+knitr::kable(full_metrics)
+```
+
+Based on our results, it appears the logistic regression model is superior to the others. The accuracy of prediction is the highest. The precision, which is the fraction of actual churned out of those predicted to churn, is 91.48%. The recall, which is the fraction of 
+true positives out of total actual positives, is 84.68%. The recall is the more important metric here, since we want to ensure that there are minimal false negatives. It is expensive for the company if they are not able to capture customers that are likely to churn, and a higher recall will minimize these false negative cases. 
+The random forest model also performs relatively well, but due to the logistic model's simplicity and interpretive power, it is better to use the logistic model for predictions. 
+
+## Conclusion
+By using various approaches, we attempted to predict customer churn. We start by performing exploratory data analysis to understand trends in the data. We focus heavily on logistic regression and try to remove insignifiant and collinear variables. The three models tried include logistic regression, decision trees, and random forest. We conclude the logistic regression model performs the best on the bases of accuracy, recall, and precision. Further modeling approaches can also be tested, but given the logistic model already performs well, it is probably better to continue modifying the logistic equation. Aside from the models used, some cross validation procedures can be tried to verify the results. Some additional metrics, such as AUC/ROC and F1 score can be calculated to get a better understanding of performance. 
+
+Based on this model, we are able to interpret the regression coefficients as odds ratios and understand how each variable directly influences the probability of a churn. While all the selected variables are significant, the most significant ones were tenure, internet service choice, and contract duration. Customers with longer tenure were less likely to churn. Customers with fiber optic service compared to those without were more likely to churn, which might indicate problems with this particular service. Customers with longer contracts were less likely to churn. Ultimately, the logistic model provides useful information to help Telco in better understanding why their customers are leaving, and hopefully prevent further churn.
+
+\newpage
+## References
+
+Dataset: https://www.kaggle.com/blastchar/telco-customer-churn
+
+https://rafalab.github.io/dsbook/
+
+http://faculty.marshall.usc.edu/gareth-james/ISL/
+
+https://towardsdatascience.com/accuracy-precision-recall-or-f1-331fb37c5cb9
+
+http://appliedpredictivemodeling.com/
