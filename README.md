@@ -5,5 +5,6 @@ of this project is to use the data to predict which customers are likely to chur
 analysis will help the company further understand why certain customers are leaving and potentially prevent
 customers from leaving. This dataset was obtained from Kaggle (https://www.kaggle.com/blastchar/telcocustomer-churn). 
 We start by performing exploratory data analysis to understand basic properties of the dataset. Then, we
-prepare the data for modeling by using dummy variables for categorical variables and removing any highly correlated
-variables in the dataset. 
+prepare the data for modeling by splitting into training and test sets. We apply logistic regression, decision tree, 
+and random forest algorithms to make predictions on customers most likely to churn. Finally, we evaluate the results
+of these three approaches and select the most appropriate model. 
